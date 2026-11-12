@@ -1,0 +1,2406 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlipBook 3D - Đọc Sách Lật Tương Tác</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Thư viện giải mã PDF của Mozilla (PDF.js) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
+
+  <style>
+    :root {
+      /* Kích thước sách lớn, cân đối, dễ nhìn trên mọi kích cỡ màn hình */
+      --book-w: clamp(380px, 42vw, 580px);
+      --book-h: clamp(540px, 80vh, 820px);
+      --paper-color: #faf7ee;
+      --paper-texture: radial-gradient(circle at 50% 50%, #fffdf8 0%, #f4ede0 100%);
+      --accent: #d4a373;
+      --accent-hover: #e2b488;
+      --zoom-factor: 1;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: radial-gradient(ellipse at center, #2e261f 0%, #15110d 100%);
+    }
+
+    /* Vùng hình nền phía sau quyển sách */
+    #background-layer {
+      position: absolute;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      z-index: 1;
+      transition: all 0.5s ease;
+      filter: brightness(0.85);
+    }
+
+    .vignette-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+      background: radial-gradient(circle at center, transparent 35%, rgba(0,0,0,0.45) 100%);
+    }
+
+    /* Khung nhìn 3D */
+    .viewport-scene {
+      position: relative;
+      z-index: 10;
+      perspective: 2800px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    /* Quyển sách 3D - Tự động căn giữa khi đóng bìa hoặc mở sách */
+    .book-container {
+      position: relative;
+      width: calc(var(--book-w) * 2);
+      height: var(--book-h);
+      transform-style: preserve-3d;
+      transition: transform 0.75s cubic-bezier(0.25, 1, 0.45, 1);
+      filter: drop-shadow(0 28px 45px rgba(0, 0, 0, 0.5))
+              drop-shadow(0 12px 18px rgba(0, 0, 0, 0.35));
+    }
+
+    /* Gáy sách và rãnh giữa */
+    .book-spine-crease {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 4px;
+      transform: translateX(-50%);
+      background: linear-gradient(to right, rgba(0,0,0,0.25), rgba(0,0,0,0.55), rgba(0,0,0,0.25));
+      z-index: 999;
+      pointer-events: none;
+      box-shadow: 0 0 12px rgba(0,0,0,0.45);
+    }
+
+    /* Tờ giấy lật */
+    .paper-sheet {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: var(--book-w);
+      height: var(--book-h);
+      transform-origin: left center;
+      transform-style: preserve-3d;
+      transition: transform 0.85s cubic-bezier(0.22, 0.61, 0.36, 1);
+      cursor: pointer;
+    }
+
+    .paper-sheet.flipped {
+      transform: rotateY(-180deg);
+    }
+
+    /* Các mặt trang */
+    .page-face {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--paper-texture);
+      border-radius: 0 6px 6px 0;
+      backface-visibility: hidden;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.05);
+    }
+
+    .page-face.back {
+      transform: rotateY(180deg);
+      border-radius: 6px 0 0 6px;
+    }
+
+    /* Ảnh trang PDF */
+    .page-face img.pdf-page-img {
+      width: 100%;
+      height: 100%;
+      object-fit: fill;
+      display: block;
+      pointer-events: none;
+    }
+
+    /* Đổ bóng rãnh gáy */
+    .page-face.front::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 55px;
+      background: linear-gradient(to right, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0.06) 45%, transparent 100%);
+      pointer-events: none;
+    }
+
+    .page-face.back::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 55px;
+      background: linear-gradient(to left, rgba(0,0,0,0.22) 0%, rgba(0,0,0,0.06) 45%, transparent 100%);
+      pointer-events: none;
+    }
+
+    /* ============================================================
+       VIDEO NHÚNG TRÊN TRANG SÁCH (DRAGGABLE & RESIZABLE)
+       ============================================================ */
+    .page-video-wrapper {
+      position: absolute;
+      z-index: 60;
+      border: 2px dashed #d4a373;
+      border-radius: 10px;
+      background: #000;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: visible;
+      touch-action: none;
+      min-width: 160px;
+      min-height: 100px;
+    }
+
+    /* Khi chia sẻ cho người khác xem (Reader Mode):
+       Video cố định vị trí, viền mượt mà, bỏ thanh kéo và nút đổi kích cỡ! */
+    body.reader-mode .page-video-wrapper,
+    .standalone-reader .page-video-wrapper {
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
+    }
+
+    body.reader-mode .video-drag-header,
+    body.reader-mode .video-resize-handle,
+    .standalone-reader .video-drag-header,
+    .standalone-reader .video-resize-handle {
+      display: none !important;
+    }
+
+    /* Thanh cầm để kéo di chuyển video (Chỉ người chỉnh sửa thấy) */
+    .video-drag-header {
+      background: rgba(24, 20, 16, 0.95);
+      color: #ebd7c3;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 10px;
+      cursor: grab;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+      border-bottom: 1px solid rgba(212, 163, 115, 0.35);
+      user-select: none;
+    }
+
+    .video-drag-header:active {
+      cursor: grabbing;
+    }
+
+    .video-drag-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      letter-spacing: 0.3px;
+    }
+
+    .video-delete-btn {
+      background: transparent;
+      border: none;
+      color: #ff6b6b;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .video-delete-btn:hover {
+      background: rgba(255, 107, 107, 0.2);
+      color: #ff3333;
+    }
+
+    /* Khung phát video */
+    .video-content-box {
+      flex: 1;
+      width: 100%;
+      height: 100%;
+      position: relative;
+      overflow: hidden;
+      background: #000;
+      border-radius: 0 0 8px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .video-content-box video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: #000;
+    }
+
+    .video-content-box iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+
+    /* Tay nắm kéo đổi kích thước ở góc dưới bên phải (Chỉ người chỉnh sửa thấy) */
+    .video-resize-handle {
+      position: absolute;
+      right: -2px;
+      bottom: -2px;
+      width: 22px;
+      height: 22px;
+      background: #d4a373;
+      color: #1a1510;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: nwse-resize;
+      border-top-left-radius: 6px;
+      border-bottom-right-radius: 8px;
+      user-select: none;
+      z-index: 70;
+      box-shadow: -2px -2px 6px rgba(0,0,0,0.3);
+    }
+
+    .video-resize-handle:hover {
+      background: #e2b488;
+      transform: scale(1.1);
+    }
+
+    /* Nút lật trang tròn 2 bên màn hình */
+    .flip-btn {
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: rgba(25, 23, 20, 0.7);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #f1ebd8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      cursor: pointer;
+      z-index: 100;
+      transition: all 0.25s ease;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+
+    .flip-btn:hover {
+      background: rgba(212, 163, 115, 0.9);
+      color: #1a1714;
+      transform: translateY(-50%) scale(1.08);
+    }
+
+    .flip-btn.prev { left: 24px; }
+    .flip-btn.next { right: 24px; }
+
+    /* Thanh điều khiển trên cùng */
+    .top-bar {
+      position: fixed;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(20, 18, 15, 0.88);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 30px;
+      padding: 6px 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    }
+
+    .action-btn {
+      background: transparent;
+      border: none;
+      color: #e5ded0;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 14px;
+      border-radius: 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      font-family: inherit;
+    }
+
+    .action-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+
+    .action-btn.primary {
+      background: #d4a373;
+      color: #1a1510;
+      font-weight: 600;
+    }
+
+    .action-btn.primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .action-btn.video-btn {
+      background: rgba(239, 68, 68, 0.2);
+      border: 1px solid rgba(239, 68, 68, 0.5);
+      color: #fca5a5;
+      font-weight: 600;
+    }
+
+    .action-btn.video-btn:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+
+    .action-btn.export-btn {
+      background: rgba(56, 161, 105, 0.25);
+      border: 1px solid rgba(56, 161, 105, 0.6);
+      color: #9ae6b4;
+      font-weight: 600;
+    }
+
+    .action-btn.export-btn:hover {
+      background: #38a169;
+      color: #fff;
+    }
+
+    .action-btn.share-btn {
+      background: rgba(212, 163, 115, 0.2);
+      border: 1px solid rgba(212, 163, 115, 0.5);
+      color: #f3dfca;
+      font-weight: 600;
+    }
+
+    .action-btn.share-btn:hover {
+      background: #d4a373;
+      color: #1a1510;
+    }
+
+    .action-btn.preview-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px dashed rgba(255, 255, 255, 0.25);
+      color: #ddd;
+    }
+
+    .action-btn.preview-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      color: #fff;
+    }
+
+    .page-indicator {
+      color: #d4a373;
+      font-size: 13px;
+      font-family: 'Cinzel', serif;
+      padding: 0 10px;
+      border-left: 1px solid rgba(255,255,255,0.15);
+      border-right: 1px solid rgba(255,255,255,0.15);
+      white-space: nowrap;
+    }
+
+    /* Bộ điều khiển Phóng to / Thu nhỏ cân đối */
+    .zoom-controls {
+      display: flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.28);
+      border-radius: 18px;
+      padding: 2px 6px;
+      gap: 2px;
+    }
+
+    .zoom-btn {
+      background: transparent;
+      border: none;
+      color: #d4a373;
+      font-size: 15px;
+      font-weight: 700;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    .zoom-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    .zoom-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #ddd;
+      min-width: 38px;
+      text-align: center;
+    }
+
+    /* ============================================================
+       QUY TẮC CHẾ ĐỘ NGƯỜI ĐỌC (READER MODE / SHARED VIEW)
+       ============================================================ */
+    body.reader-mode .creator-only {
+      display: none !important;
+    }
+
+    body.reader-mode .page-indicator {
+      border-left: none !important;
+    }
+
+    .exit-preview-pill {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(20, 18, 15, 0.9);
+      border: 1px solid #d4a373;
+      color: #ecd5bc;
+      border-radius: 30px;
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      z-index: 1000;
+      display: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      align-items: center;
+      gap: 6px;
+    }
+
+    .exit-preview-pill:hover {
+      background: #d4a373;
+      color: #1a1510;
+    }
+
+    body.in-preview .exit-preview-pill {
+      display: flex !important;
+    }
+
+    /* Modal / Hộp thoại Chia Sẻ & Hộp thoại Thêm Video */
+    .share-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(10px);
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    .share-modal-backdrop.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .share-card {
+      background: #1c1814;
+      border: 1px solid rgba(212, 163, 115, 0.35);
+      border-radius: 20px;
+      width: 90%;
+      max-width: 540px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 26px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+      transform: translateY(20px);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      color: #f7ede2;
+      position: relative;
+    }
+
+    .share-modal-backdrop.active .share-card {
+      transform: translateY(0);
+    }
+
+    .share-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 12px;
+    }
+
+    .share-header h3 {
+      font-family: 'Cinzel', serif;
+      font-size: 20px;
+      color: #e0b589;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .close-modal-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      color: #aaa;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .close-modal-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+
+    .share-explain-box {
+      background: rgba(212, 163, 115, 0.1);
+      border-left: 3px solid #d4a373;
+      padding: 10px 14px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #ebd7c3;
+    }
+
+    .share-method-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #e0b589;
+      margin: 16px 0 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .export-card-btn {
+      width: 100%;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%);
+      border: 1px solid rgba(129, 199, 132, 0.5);
+      border-radius: 12px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.3);
+      transition: all 0.25s ease;
+      font-family: inherit;
+      margin-bottom: 6px;
+    }
+
+    .export-card-btn:hover {
+      background: linear-gradient(135deg, #388e3c 0%, #2e7d32 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(46, 125, 50, 0.4);
+    }
+
+    .export-hint {
+      font-size: 12px;
+      color: #a89f91;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .share-link-box {
+      display: flex;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(212, 163, 115, 0.25);
+      border-radius: 12px;
+      padding: 6px;
+      margin-bottom: 16px;
+    }
+
+    .share-link-input {
+      background: transparent;
+      border: none;
+      color: #eee;
+      padding: 8px 12px;
+      font-size: 13px;
+      flex: 1;
+      outline: none;
+      font-family: monospace;
+    }
+
+    .copy-btn {
+      background: #d4a373;
+      color: #1a1510;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .copy-btn:hover {
+      background: #e2b488;
+    }
+
+    .share-social-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .social-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 10px 4px;
+      color: #e5ded0;
+      text-decoration: none;
+      font-size: 11.5px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .social-btn:hover {
+      background: rgba(212, 163, 115, 0.2);
+      border-color: #d4a373;
+      transform: translateY(-2px);
+    }
+
+    .social-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+    }
+
+    .qr-section {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 12px;
+      padding: 10px 14px;
+    }
+
+    .qr-img {
+      width: 70px;
+      height: 70px;
+      border-radius: 6px;
+      background: #fff;
+      padding: 4px;
+    }
+
+    .qr-desc {
+      font-size: 12px;
+      line-height: 1.5;
+      color: #c4b5a2;
+    }
+
+    /* Modal Chèn Video */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 13px;
+      color: #ecd5bc;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
+    .form-control {
+      width: 100%;
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(212, 163, 115, 0.3);
+      border-radius: 8px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .form-control:focus {
+      border-color: #d4a373;
+    }
+
+    /* Thông báo Toast */
+    .toast-notice {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #d4a373;
+      color: #1a1510;
+      padding: 10px 22px;
+      border-radius: 30px;
+      font-weight: 600;
+      font-size: 14px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+      z-index: 9999;
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toast-notice.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    /* Modal chọn nền */
+    .bg-drawer {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(140%);
+      background: rgba(22, 19, 16, 0.94);
+      backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 18px;
+      padding: 16px 20px;
+      z-index: 120;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+    }
+
+    .bg-drawer.open {
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .bg-thumb {
+      width: 52px;
+      height: 40px;
+      border-radius: 8px;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .bg-thumb:hover { transform: scale(1.1); }
+    .bg-thumb.selected {
+      border-color: #d4a373;
+      transform: scale(1.05);
+    }
+
+    .upload-label {
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px dashed rgba(212, 163, 115, 0.6);
+      border-radius: 8px;
+      color: #e5ded0;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .upload-label:hover {
+      background: rgba(212, 163, 115, 0.2);
+    }
+
+    /* Loading overlay */
+    .pdf-loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 12, 10, 0.88);
+      backdrop-filter: blur(8px);
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      color: #faf0e6;
+    }
+
+    .pdf-loading-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .spinner {
+      width: 50px;
+      height: 50px;
+      border: 3px solid rgba(212, 163, 115, 0.25);
+      border-top-color: #d4a373;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 18px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Drag & Drop */
+    .drag-drop-zone {
+      position: fixed;
+      inset: 20px;
+      border: 3px dashed #d4a373;
+      border-radius: 20px;
+      background: rgba(20, 16, 12, 0.85);
+      z-index: 9000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+
+    .drag-drop-zone.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .shortcut-hint {
+      position: fixed;
+      bottom: 16px;
+      left: 20px;
+      color: rgba(255, 255, 255, 0.45);
+      font-size: 12px;
+      z-index: 80;
+      pointer-events: none;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      :root {
+        --book-w: 46vw;
+        --book-h: 70vh;
+      }
+      .flip-btn {
+        width: 44px;
+        height: 44px;
+        font-size: 18px;
+      }
+      .top-bar {
+        padding: 4px 10px;
+        gap: 6px;
+      }
+      .action-btn {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      .share-social-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Lớp hiển thị ảnh nền phía sau sách -->
+  <div id="background-layer"></div>
+  <div class="vignette-overlay"></div>
+
+  <!-- Nút chuyển trang tròn 2 bên -->
+  <button class="flip-btn prev" id="btn-prev" title="Trang trước (Mũi tên trái)">&#10094;</button>
+  <button class="flip-btn next" id="btn-next" title="Trang sau (Mũi tên phải hoặc click trang)">&#10095;</button>
+
+  <!-- Thanh công cụ điều khiển -->
+  <header class="top-bar">
+    <!-- CÁC CHỨC NĂNG DÀNH RIÊNG CHO BẠN (SẼ BỊ ẨN ĐỐI VỚI NGƯỜI ĐƯỢC CHIA SẺ) -->
+    
+    <!-- 1. Nút tải PDF từ máy -->
+    <label class="action-btn primary creator-only" title="Chọn file PDF từ máy của bạn để tạo FlipBook">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+      Chọn File PDF
+      <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
+    </label>
+
+    <!-- 2. NÚT THÊM VIDEO MỚI (CHÈN VIDEO VÀO TRANG SÁCH) -->
+    <button class="action-btn video-btn creator-only" id="openVideoModalBtn" title="Chèn video (YouTube hoặc tải file) vào trang sách">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+      Thêm Video
+    </button>
+
+    <!-- 3. Nút Đổi Nền Sau -->
+    <button class="action-btn creator-only" id="toggleBgDrawerBtn" title="Đổi hình nền bàn/phòng phía sau">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+      Đổi Nền Sau
+    </button>
+
+    <!-- 4. Nút Chia Sẻ -->
+    <button class="action-btn share-btn creator-only" id="openShareModalBtn" title="Chia sẻ quyển sách này">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+      Chia Sẻ
+    </button>
+
+    <!-- 5. Nút Xuất File Độc Lập -->
+    <button class="action-btn export-btn creator-only" id="topExportBtn" title="Xuất file HTML có sẵn sách và video để gửi cho bạn bè (Người nhận chỉ xem, không thể chỉnh sửa)">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      Xuất Sách Để Gửi
+    </button>
+
+    <!-- 6. Nút Xem Thử Giao Diện Của Người Nhận -->
+    <button class="action-btn preview-btn creator-only" id="toggleReaderPreviewBtn" title="Bấm vào để xem thử giao diện người nhận sẽ thấy">
+      👁️ Xem Thử Dạng Người Nhận
+    </button>
+
+    <!-- ============================================================
+         PHẦN HIỂN THỊ DÀNH CHO CẢ NGƯỜI ĐƯỢC CHIA SẺ
+         (Chỉ có: Trang hiện tại, Phóng to/Thu nhỏ, Âm thanh, Toàn màn hình)
+         ============================================================ -->
+    <div class="page-indicator" id="pageNumberDisplay">Trang Bìa Trước</div>
+
+    <!-- Bộ điều khiển Phóng to / Thu nhỏ cân đối -->
+    <div class="zoom-controls" title="Phóng to / Thu nhỏ sách">
+      <button class="zoom-btn" id="zoomOutBtn" title="Thu nhỏ">−</button>
+      <span class="zoom-label" id="zoomLabel">100%</span>
+      <button class="zoom-btn" id="zoomInBtn" title="Phóng to">+</button>
+      <button class="zoom-btn" id="zoomResetBtn" title="Cân đối mặc định" style="font-size:11px; width:auto; padding:0 4px;">↺</button>
+    </div>
+
+    <button class="action-btn" id="toggleSoundBtn" title="Bật/Tắt âm thanh lật sách">
+      <span id="soundIcon">🔊</span>
+    </button>
+    
+    <button class="action-btn" id="toggleFullscreenBtn" title="Toàn màn hình">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+    </button>
+  </header>
+
+  <!-- Nút thoát xem thử dành cho chủ sở hữu -->
+  <button class="exit-preview-pill" id="exitPreviewBtn">
+    <span>✏️</span> Thoát Xem Thử (Hiện lại công cụ chỉnh sửa)
+  </button>
+
+  <!-- HỘP THOẠI CHÈN VIDEO (MODAL) -->
+  <div class="share-modal-backdrop creator-only" id="videoModal">
+    <div class="share-card">
+      <div class="share-header">
+        <h3>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+          Chèn Video Vào Trang Sách
+        </h3>
+        <button class="close-modal-btn" id="closeVideoModalBtn">&times;</button>
+      </div>
+
+      <div class="share-explain-box">
+        <strong>💡 Tự động phát khi lật tới trang:</strong> Khi người nhận lật sách đến trang có video, video sẽ tự động phát. Người xem có thể bấm dừng/tạm dừng bất cứ lúc nào. Khi lật sang trang khác, video sẽ tự động dừng lại!
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">1. Chọn trang để đặt video:</label>
+        <select class="form-control" id="videoTargetPageSelect"></select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">2. Dán link video (YouTube hoặc link MP4):</label>
+        <input type="text" class="form-control" id="videoUrlInput" placeholder="Ví dụ: https://www.youtube.com/watch?v=... hoặc link .mp4">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Hoặc tải file video từ máy tính của bạn (.mp4):</label>
+        <label class="upload-label" style="justify-content:center; padding:10px;">
+          📁 Chọn File Video MP4 Từ Máy
+          <input type="file" id="videoFileInput" accept="video/mp4,video/webm" style="display:none;">
+        </label>
+        <div id="videoFileNameDisplay" style="font-size:12px; color:#d4a373; margin-top:5px; text-align:center;"></div>
+      </div>
+
+      <button class="export-card-btn" id="confirmInsertVideoBtn" style="background:#d4a373; color:#1a1510; font-weight:700;">
+        ✓ Đặt Video Vào Trang Sách
+      </button>
+    </div>
+  </div>
+
+  <!-- Modal Chia Sẻ & Giải Thích Hoàn Chỉnh -->
+  <div class="share-modal-backdrop creator-only" id="shareModal">
+    <div class="share-card">
+      <div class="share-header">
+        <h3>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d4a373" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+          Chia Sẻ Quyển Sách Của Bạn
+        </h3>
+        <button class="close-modal-btn" id="closeShareModalBtn">&times;</button>
+      </div>
+
+      <div class="share-explain-box">
+        <strong>💡 Đảm bảo người nhận chỉ thấy sách, không thấy nút chỉnh sửa:</strong><br>
+        Tất cả các nút như <em>"Chọn File PDF"</em>, <em>"Thêm Video"</em>, <em>"Đổi Nền Sau"</em>, <em>"Chia Sẻ"</em> sẽ tự động biến mất khi người khác mở xem! Video sẽ được ghim cố định và tự động phát khi người đọc lật đến trang đó.
+      </div>
+
+      <!-- CÁCH 1: XUẤT FILE ĐỘC LẬP -->
+      <div class="share-method-title">
+        <span style="background:#38a169; color:#fff; width:20px; height:20px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:11px;">1</span>
+        Cách 1: Tải Về File Sách Độc Lập Để Gửi (Khuyên Dùng)
+      </div>
+      <button class="export-card-btn" id="modalExportBtn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        Tải Về File Sách Cho Bạn Bè (.html)
+      </button>
+      <div class="export-hint">
+        ✓ File này chỉ chứa giao diện người đọc: lật trang, âm thanh, phóng to và video đã ghim cố định tự phát khi lật tới.<br>
+        ✓ Hoàn toàn không có nút "Chọn PDF", "Thêm Video", "Đổi Nền" hay các công cụ chỉnh sửa!
+      </div>
+
+      <!-- CÁCH 2: CHIA SẺ BẰNG LINK WEB -->
+      <div class="share-method-title">
+        <span style="background:#d4a373; color:#1a1510; width:20px; height:20px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:11px;">2</span>
+        Cách 2: Chia Sẻ Bằng Link Web (Chế độ Người Đọc Tự Động)
+      </div>
+      <p style="font-size:12.5px; color:#c4b5a2; margin-bottom:8px;">
+        Đường link chia sẻ (Đã gắn mã <code>?view=1</code> để tự động ẩn toàn bộ nút chỉnh sửa):
+      </p>
+      <div class="share-link-box">
+        <input type="text" class="share-link-input" id="shareLinkInput" readonly>
+        <button class="copy-btn" id="copyLinkBtn">Sao Chép Link</button>
+      </div>
+
+      <div class="share-social-grid">
+        <button class="social-btn" id="nativeShareBtn" title="Mở chia sẻ hệ thống (Zalo, AirDrop...)">
+          <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92c0-1.61-1.31-2.92-2.92-2.92z"/></svg>
+          Hệ Thống
+        </button>
+
+        <a class="social-btn" id="shareFacebook" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+          Facebook
+        </a>
+
+        <a class="social-btn" id="shareTwitter" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          Twitter / X
+        </a>
+
+        <a class="social-btn" id="shareTelegram" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+          Telegram
+        </a>
+      </div>
+
+      <div class="qr-section">
+        <img class="qr-img" id="shareQrImg" src="" alt="Mã QR Chia Sẻ">
+        <div class="qr-desc">
+          <strong>Quét mã QR bằng điện thoại</strong><br>
+          Người quét sẽ mở trực tiếp trang đọc sách sạch sẽ không có nút chỉnh sửa.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Thông báo Toast -->
+  <div class="toast-notice" id="toastNotice">
+    <span>✓</span> Đã sao chép liên kết vào bộ nhớ tạm!
+  </div>
+
+  <!-- Bảng chọn/tải ảnh nền phía sau -->
+  <div class="bg-drawer creator-only" id="bgDrawer">
+    <span style="color:#d4a373; font-size:12px; font-weight:600; text-transform:uppercase;">Nền phía sau:</span>
+    <div class="bg-thumb selected" data-type="wood" style="background: radial-gradient(circle, #4a3728 0%, #1a120c 100%);" title="Bàn Gỗ Cổ Điển"></div>
+    <div class="bg-thumb" data-type="dark" style="background: linear-gradient(135deg, #1f242d 0%, #0d1017 100%);" title="Studio Hiện Đại"></div>
+    <div class="bg-thumb" data-type="library" style="background: linear-gradient(135deg, #3d2314 0%, #1b0f09 100%);" title="Thư Viện Ấm Áp"></div>
+    <div class="bg-thumb" data-type="cozy" style="background: linear-gradient(135deg, #606c38 0%, #283618 100%);" title="Phòng Đọc Xanh"></div>
+    <div class="bg-thumb" data-type="minimal" style="background: linear-gradient(135deg, #8d99ae 0%, #2b2d42 100%);" title="Tối Giản Tinh Tế"></div>
+
+    <label class="upload-label">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 8 12 3 17 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+      Tải Nền Của Bạn
+      <input type="file" id="bgFileInput" accept="image/*" style="display:none;">
+    </label>
+  </div>
+
+  <!-- Lớp phủ Loading khi đang đọc trang PDF -->
+  <div class="pdf-loading-overlay" id="pdfLoading">
+    <div class="spinner"></div>
+    <h3 style="font-family:'Cinzel', serif; letter-spacing:1px; margin-bottom: 6px;">ĐANG NẠP TÀI LIỆU PDF...</h3>
+    <p id="pdfLoadingStatus" style="font-size:14px; opacity:0.8;">Vui lòng đợi giây lát</p>
+  </div>
+
+  <!-- Lớp phủ Kéo Thả File PDF -->
+  <div class="drag-drop-zone creator-only" id="dragDropZone">
+    <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#d4a373" stroke-width="2" style="margin-bottom:16px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="12" y1="18" x2="12" y2="12"></line><line x1="9" y1="15" x2="15" y2="15"></line></svg>
+    Thả file PDF của bạn vào đây để mở thành FlipBook!
+  </div>
+
+  <!-- Không gian 3D chứa sách -->
+  <main class="viewport-scene">
+    <div class="book-container" id="bookContainer">
+      <div class="book-spine-crease"></div>
+      <!-- Các trang sách sẽ được render động ở đây -->
+    </div>
+  </main>
+
+  <div class="shortcut-hint">
+    Phím ⬅ ➡ để lật trang | Nhấp chuột trực tiếp vào bên phải để lật tới, bên trái để lật lùi
+  </div>
+
+  <script>
+    /* ============================================================
+       CẤU HÌNH & TRẠNG THÁI FLIPBOOK
+       ============================================================ */
+    const bookContainer = document.getElementById('bookContainer');
+    const btnPrev = document.getElementById('btn-prev');
+    const btnNext = document.getElementById('btn-next');
+    const pageDisplay = document.getElementById('pageNumberDisplay');
+    const bgLayer = document.getElementById('background-layer');
+    const bgDrawer = document.getElementById('bgDrawer');
+    const toggleBgDrawerBtn = document.getElementById('toggleBgDrawerBtn');
+    const toggleSoundBtn = document.getElementById('toggleSoundBtn');
+    const soundIcon = document.getElementById('soundIcon');
+    const toggleFullscreenBtn = document.getElementById('toggleFullscreenBtn');
+    const bgFileInput = document.getElementById('bgFileInput');
+    const pdfFileInput = document.getElementById('pdfFileInput');
+    const pdfLoading = document.getElementById('pdfLoading');
+    const pdfLoadingStatus = document.getElementById('pdfLoadingStatus');
+    const dragDropZone = document.getElementById('dragDropZone');
+
+    // Các phần tử Chia Sẻ, Xuất File, Phóng To & Chế Độ Người Đọc
+    const openShareModalBtn = document.getElementById('openShareModalBtn');
+    const closeShareModalBtn = document.getElementById('closeShareModalBtn');
+    const shareModal = document.getElementById('shareModal');
+    const shareLinkInput = document.getElementById('shareLinkInput');
+    const copyLinkBtn = document.getElementById('copyLinkBtn');
+    const nativeShareBtn = document.getElementById('nativeShareBtn');
+    const shareFacebook = document.getElementById('shareFacebook');
+    const shareTwitter = document.getElementById('shareTwitter');
+    const shareTelegram = document.getElementById('shareTelegram');
+    const shareQrImg = document.getElementById('shareQrImg');
+    const toastNotice = document.getElementById('toastNotice');
+    const topExportBtn = document.getElementById('topExportBtn');
+    const modalExportBtn = document.getElementById('modalExportBtn');
+    const toggleReaderPreviewBtn = document.getElementById('toggleReaderPreviewBtn');
+    const exitPreviewBtn = document.getElementById('exitPreviewBtn');
+
+    // Các phần tử Video Modal
+    const openVideoModalBtn = document.getElementById('openVideoModalBtn');
+    const closeVideoModalBtn = document.getElementById('closeVideoModalBtn');
+    const videoModal = document.getElementById('videoModal');
+    const videoTargetPageSelect = document.getElementById('videoTargetPageSelect');
+    const videoUrlInput = document.getElementById('videoUrlInput');
+    const videoFileInput = document.getElementById('videoFileInput');
+    const videoFileNameDisplay = document.getElementById('videoFileNameDisplay');
+    const confirmInsertVideoBtn = document.getElementById('confirmInsertVideoBtn');
+
+    const zoomInBtn = document.getElementById('zoomInBtn');
+    const zoomOutBtn = document.getElementById('zoomOutBtn');
+    const zoomResetBtn = document.getElementById('zoomResetBtn');
+    const zoomLabel = document.getElementById('zoomLabel');
+
+    let sheets = [];
+    let totalSheets = 0;
+    let currentSheetIndex = 0;
+    let isSoundEnabled = true;
+    let currentBookMode = 'sample';
+    let totalPdfPages = 0;
+    let currentZoom = 1.0;
+    let currentLoadedPages = [];
+    let currentBookTitle = 'MyFlipBook';
+
+    // Lưu danh sách video trên từng mặt trang (faceIndex)
+    let bookVideos = {};
+    let tempSelectedVideoFile = null;
+    let tempSelectedVideoDataUrl = null;
+
+    /* ============================================================
+       XỬ LÝ CHẾ ĐỘ NGƯỜI ĐỌC (ẨN HOÀN TOÀN CÁC NÚT BIÊN TẬP)
+       ============================================================ */
+    const urlParams = new URLSearchParams(window.location.search);
+    const isViewMode = urlParams.get('view') === '1' || urlParams.get('read') === '1';
+
+    if (isViewMode) {
+      document.body.classList.add('reader-mode');
+    }
+
+    toggleReaderPreviewBtn.addEventListener('click', () => {
+      document.body.classList.add('reader-mode', 'in-preview');
+      showToast('Đang ở chế độ xem thử (Giao diện người nhận)!');
+    });
+
+    exitPreviewBtn.addEventListener('click', () => {
+      document.body.classList.remove('reader-mode', 'in-preview');
+      showToast('Đã quay lại chế độ chỉnh sửa của bạn.');
+    });
+
+    /* ============================================================
+       CĂN GIỮA CÂN ĐỐI VÀ PHÓNG TO SÁCH (BALANCED PROPORTIONS)
+       ============================================================ */
+    function updateBookTransform() {
+      let translateXPercent = 0;
+      if (currentSheetIndex === 0) {
+        translateXPercent = -25;
+      } else if (currentSheetIndex === totalSheets) {
+        translateXPercent = 25;
+      } else {
+        translateXPercent = 0;
+      }
+      bookContainer.style.transform = `translateX(${translateXPercent}%) scale(${currentZoom})`;
+    }
+
+    function setZoom(newZoom) {
+      currentZoom = Math.max(0.7, Math.min(1.6, newZoom));
+      zoomLabel.textContent = `${Math.round(currentZoom * 100)}%`;
+      updateBookTransform();
+    }
+
+    zoomInBtn.addEventListener('click', () => setZoom(currentZoom + 0.1));
+    zoomOutBtn.addEventListener('click', () => setZoom(currentZoom - 0.1));
+    zoomResetBtn.addEventListener('click', () => setZoom(1.0));
+
+    /* ============================================================
+       HỆ THỐNG ÂM THANH LẬT SÁCH (WEB AUDIO API)
+       ============================================================ */
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    let audioCtx = null;
+
+    function playPageFlipSound() {
+      if (!isSoundEnabled) return;
+      try {
+        if (!audioCtx) audioCtx = new AudioContextClass();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+
+        const bufferSize = audioCtx.sampleRate * 0.18;
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+
+        for (let i = 0; i < bufferSize; i++) {
+          const decay = Math.pow(1 - (i / bufferSize), 2);
+          data[i] = (Math.random() * 2 - 1) * decay * 0.45;
+        }
+
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = 1600;
+        filter.Q.value = 1.2;
+
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.17);
+
+        noise.connect(filter);
+        filter.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        noise.start();
+      } catch (e) {}
+    }
+
+    /* ============================================================
+       TỰ ĐỘNG PHÁT VIDEO KHI LẬT TỚI TRANG & DỪNG KHI LẬT ĐI
+       ============================================================ */
+    function getVisibleFaceIndices() {
+      if (totalSheets === 0) return [];
+      if (currentSheetIndex === 0) {
+        return [0]; // Chỉ thấy bìa trước
+      } else if (currentSheetIndex === totalSheets) {
+        return [(totalSheets - 1) * 2 + 1]; // Chỉ thấy bìa sau
+      } else {
+        return [
+          (currentSheetIndex - 1) * 2 + 1, // Trang bên trái
+          currentSheetIndex * 2            // Trang bên phải
+        ];
+      }
+    }
+
+    function syncVideoPlayback() {
+      const visibleIndices = getVisibleFaceIndices();
+      const allFaces = Array.from(document.querySelectorAll('.page-face'));
+
+      allFaces.forEach((face, fIdx) => {
+        const isVisible = visibleIndices.includes(fIdx);
+
+        // Xử lý thẻ <video>
+        const videoEls = face.querySelectorAll('video');
+        videoEls.forEach(vid => {
+          if (isVisible) {
+            // Tự động phát khi trang xuất hiện
+            const playPromise = vid.play();
+            if (playPromise !== undefined) {
+              playPromise.catch(() => {
+                // Nếu trình duyệt yêu cầu tương tác hoặc chặn tiếng lúc đầu, mute tạm để tự phát
+                vid.muted = true;
+                vid.play().catch(() => {});
+              });
+            }
+          } else {
+            // Dừng phát khi lật sang trang khác
+            vid.pause();
+          }
+        });
+
+        // Xử lý iframe YouTube bằng YouTube Player API PostMessage
+        const iframeEls = face.querySelectorAll('iframe');
+        iframeEls.forEach(ifr => {
+          try {
+            if (isVisible) {
+              ifr.contentWindow.postMessage(JSON.stringify({
+                event: 'command',
+                func: 'playVideo',
+                args: []
+              }), '*');
+            } else {
+              ifr.contentWindow.postMessage(JSON.stringify({
+                event: 'command',
+                func: 'pauseVideo',
+                args: []
+              }), '*');
+            }
+          } catch (e) {}
+        });
+      });
+    }
+
+    /* ============================================================
+       QUẢN LÝ LẬT TRANG & Z-INDEX
+       ============================================================ */
+    function resetSheetZIndexes() {
+      sheets.forEach((sheet, idx) => {
+        if (idx < currentSheetIndex) {
+          sheet.classList.add('flipped');
+          sheet.style.zIndex = idx + 1;
+        } else {
+          sheet.classList.remove('flipped');
+          sheet.style.zIndex = (totalSheets - idx) + 1;
+        }
+      });
+      updatePageLabel();
+      updateBookTransform();
+      syncVideoPlayback();
+    }
+
+    function updatePageLabel() {
+      if (totalSheets === 0) {
+        pageDisplay.textContent = 'Trống';
+        return;
+      }
+      if (currentSheetIndex === 0) {
+        pageDisplay.textContent = 'Trang Bìa Trước (1)';
+      } else if (currentSheetIndex === totalSheets) {
+        pageDisplay.textContent = `Trang Cuối (${totalPdfPages || totalSheets * 2})`;
+      } else {
+        const leftPage = currentSheetIndex * 2;
+        const rightPage = currentSheetIndex * 2 + 1;
+        const maxP = totalPdfPages || totalSheets * 2;
+        pageDisplay.textContent = `Trang ${leftPage} - ${Math.min(rightPage, maxP)} / ${maxP}`;
+      }
+    }
+
+    function flipNext() {
+      if (currentSheetIndex < totalSheets) {
+        const sheet = sheets[currentSheetIndex];
+        sheet.style.zIndex = totalSheets + 10;
+        sheet.classList.add('flipped');
+        playPageFlipSound();
+        currentSheetIndex++;
+        updateBookTransform();
+        setTimeout(resetSheetZIndexes, 850);
+      }
+    }
+
+    function flipPrev() {
+      if (currentSheetIndex > 0) {
+        currentSheetIndex--;
+        const sheet = sheets[currentSheetIndex];
+        sheet.style.zIndex = totalSheets + 10;
+        sheet.classList.remove('flipped');
+        playPageFlipSound();
+        updateBookTransform();
+        setTimeout(resetSheetZIndexes, 850);
+      }
+    }
+
+    function attachSheetEvents() {
+      sheets.forEach((sheet, idx) => {
+        sheet.addEventListener('click', (e) => {
+          // Bỏ qua nếu đang click tương tác vào video hoặc chọn text
+          if (e.target.closest('.page-video-wrapper') || e.target.closest('video') || e.target.closest('iframe')) return;
+          if (window.getSelection().toString().length > 0) return;
+
+          if (sheet.classList.contains('flipped')) {
+            if (idx === currentSheetIndex - 1) flipPrev();
+          } else {
+            if (idx === currentSheetIndex) flipNext();
+          }
+        });
+      });
+    }
+
+    /* ============================================================
+       HỆ THỐNG QUẢN LÝ VIDEO (CHÈN, KÉO DI CHUYỂN, ĐỔI KÍCH CỠ)
+       ============================================================ */
+    function parseYouTubeUrl(url) {
+      if (!url) return null;
+      const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
+      const match = url.match(regExp);
+      return (match && match[2].length === 11) ? `https://www.youtube.com/embed/${match[2]}?enablejsapi=1` : null;
+    }
+
+    // Cập nhật danh sách trang trong dropdown chèn video
+    function updateVideoTargetPageOptions() {
+      videoTargetPageSelect.innerHTML = '';
+      const allFaces = document.querySelectorAll('.page-face');
+      allFaces.forEach((face, idx) => {
+        const opt = document.createElement('option');
+        opt.value = idx;
+        let label = '';
+        if (idx === 0) label = 'Trang Bìa Trước (Mặt 1)';
+        else if (idx === allFaces.length - 1) label = `Trang Bìa Sau (Mặt ${idx + 1})`;
+        else label = `Trang ${idx + 1}`;
+        opt.textContent = label;
+
+        let currentOpenFaceIndex = 0;
+        if (currentSheetIndex === 0) currentOpenFaceIndex = 0;
+        else if (currentSheetIndex === totalSheets) currentOpenFaceIndex = allFaces.length - 1;
+        else currentOpenFaceIndex = currentSheetIndex * 2 - 1;
+
+        if (idx === currentOpenFaceIndex) opt.selected = true;
+        videoTargetPageSelect.appendChild(opt);
+      });
+    }
+
+    openVideoModalBtn.addEventListener('click', () => {
+      updateVideoTargetPageOptions();
+      videoUrlInput.value = '';
+      tempSelectedVideoFile = null;
+      tempSelectedVideoDataUrl = null;
+      videoFileNameDisplay.textContent = '';
+      videoModal.classList.add('active');
+    });
+
+    closeVideoModalBtn.addEventListener('click', () => {
+      videoModal.classList.remove('active');
+    });
+
+    videoModal.addEventListener('click', (e) => {
+      if (e.target === videoModal) videoModal.classList.remove('active');
+    });
+
+    videoFileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        tempSelectedVideoFile = file;
+        videoFileNameDisplay.textContent = `✓ Đang đọc: ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)...`;
+        videoUrlInput.value = '';
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          tempSelectedVideoDataUrl = event.target.result;
+          videoFileNameDisplay.textContent = `✓ Đã sẵn sàng: ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`;
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+
+    // Tạo phần tử DOM video trên trang
+    function createVideoElement(videoData, faceIndex) {
+      const allFaces = document.querySelectorAll('.page-face');
+      const targetFace = allFaces[faceIndex];
+      if (!targetFace) return;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'page-video-wrapper';
+      wrapper.id = videoData.id;
+      wrapper.style.left = videoData.left;
+      wrapper.style.top = videoData.top;
+      wrapper.style.width = videoData.width;
+      wrapper.style.height = videoData.height;
+
+      // 1. Thanh kéo di chuyển (Ẩn hoàn toàn với người nhận)
+      const header = document.createElement('div');
+      header.className = 'video-drag-header';
+      header.innerHTML = `
+        <span class="video-drag-title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="20" cy="12" r="2"/></svg>
+          Kéo di chuyển
+        </span>
+        <button class="video-delete-btn" title="Xóa video khỏi trang">✕</button>
+      `;
+
+      // 2. Nội dung phát video
+      const content = document.createElement('div');
+      content.className = 'video-content-box';
+
+      if (videoData.type === 'youtube') {
+        const iframe = document.createElement('iframe');
+        iframe.src = videoData.src;
+        iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+        iframe.allowFullscreen = true;
+        content.appendChild(iframe);
+      } else {
+        const vid = document.createElement('video');
+        vid.src = videoData.src;
+        vid.controls = true;
+        vid.playsInline = true;
+        content.appendChild(vid);
+      }
+
+      // 3. Tay nắm kéo đổi kích thước (Ẩn hoàn toàn với người nhận)
+      const resizeHandle = document.createElement('div');
+      resizeHandle.className = 'video-resize-handle';
+      resizeHandle.title = 'Nắm kéo để thu nhỏ / phóng to video';
+      resizeHandle.textContent = '⇲';
+
+      wrapper.appendChild(header);
+      wrapper.appendChild(content);
+      wrapper.appendChild(resizeHandle);
+      targetFace.appendChild(wrapper);
+
+      // Xử lý Xóa video
+      header.querySelector('.video-delete-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('Bạn có chắc muốn xóa video này khỏi trang?')) {
+          wrapper.remove();
+          if (bookVideos[faceIndex]) {
+            bookVideos[faceIndex] = bookVideos[faceIndex].filter(v => v.id !== videoData.id);
+          }
+          showToast('Đã xóa video!');
+        }
+      });
+
+      // Xử lý Kéo di chuyển vị trí (Drag)
+      header.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.video-delete-btn')) return;
+        if (document.body.classList.contains('reader-mode')) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialLeft = wrapper.offsetLeft;
+        const initialTop = wrapper.offsetTop;
+        const parentW = targetFace.offsetWidth;
+        const parentH = targetFace.offsetHeight;
+
+        function onMouseMove(moveEvent) {
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+          let newLeft = Math.max(0, Math.min(parentW - wrapper.offsetWidth, initialLeft + dx));
+          let newTop = Math.max(0, Math.min(parentH - wrapper.offsetHeight, initialTop + dy));
+
+          const leftPercent = ((newLeft / parentW) * 100).toFixed(2) + '%';
+          const topPercent = ((newTop / parentH) * 100).toFixed(2) + '%';
+
+          wrapper.style.left = leftPercent;
+          wrapper.style.top = topPercent;
+
+          videoData.left = leftPercent;
+          videoData.top = topPercent;
+        }
+
+        function onMouseUp() {
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+        }
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+      });
+
+      // Xử lý Thay đổi kích cỡ (Resize)
+      resizeHandle.addEventListener('mousedown', (e) => {
+        if (document.body.classList.contains('reader-mode')) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialWidth = wrapper.offsetWidth;
+        const initialHeight = wrapper.offsetHeight;
+        const parentW = targetFace.offsetWidth;
+        const parentH = targetFace.offsetHeight;
+
+        function onMouseMove(moveEvent) {
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+
+          let newWidth = Math.max(160, Math.min(parentW - wrapper.offsetLeft, initialWidth + dx));
+          let newHeight = Math.max(100, Math.min(parentH - wrapper.offsetTop, initialHeight + dy));
+
+          const widthPercent = ((newWidth / parentW) * 100).toFixed(2) + '%';
+          const heightPx = Math.round(newHeight) + 'px';
+
+          wrapper.style.width = widthPercent;
+          wrapper.style.height = heightPx;
+
+          videoData.width = widthPercent;
+          videoData.height = heightPx;
+        }
+
+        function onMouseUp() {
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+        }
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+      });
+    }
+
+    // Vẽ lại tất cả các video đã lưu sau khi lật trang hoặc nạp sách
+    function renderSavedVideos() {
+      document.querySelectorAll('.page-video-wrapper').forEach(el => el.remove());
+
+      Object.keys(bookVideos).forEach(faceIdx => {
+        const list = bookVideos[faceIdx] || [];
+        list.forEach(vData => {
+          createVideoElement(vData, parseInt(faceIdx));
+        });
+      });
+
+      // Đồng bộ trạng thái phát ngay sau khi vẽ
+      setTimeout(syncVideoPlayback, 300);
+    }
+
+    // Xử lý xác nhận chèn video
+    confirmInsertVideoBtn.addEventListener('click', async () => {
+      const faceIndex = parseInt(videoTargetPageSelect.value);
+      const urlText = videoUrlInput.value.trim();
+
+      let videoType = '';
+      let videoSrc = '';
+
+      if (tempSelectedVideoDataUrl || tempSelectedVideoFile) {
+        videoType = 'file';
+        videoSrc = tempSelectedVideoDataUrl || URL.createObjectURL(tempSelectedVideoFile);
+      } else if (urlText) {
+        const ytEmbed = parseYouTubeUrl(urlText);
+        if (ytEmbed) {
+          videoType = 'youtube';
+          videoSrc = ytEmbed;
+        } else {
+          videoType = 'direct';
+          videoSrc = urlText;
+        }
+      } else {
+        alert('Vui lòng dán link video (YouTube/MP4) hoặc chọn file video từ máy tính!');
+        return;
+      }
+
+      const newVideoData = {
+        id: 'vid_' + Date.now(),
+        type: videoType,
+        src: videoSrc,
+        left: '10%',
+        top: '20%',
+        width: '80%',
+        height: '240px'
+      };
+
+      if (!bookVideos[faceIndex]) bookVideos[faceIndex] = [];
+      bookVideos[faceIndex].push(newVideoData);
+
+      createVideoElement(newVideoData, faceIndex);
+      videoModal.classList.remove('active');
+      showToast('Đã chèn video thành công! Bạn có thể kéo và chỉnh kích cỡ.');
+      syncVideoPlayback();
+    });
+
+    /* ============================================================
+       XUẤT FILE ĐỘC LẬP DÀNH CHO BẠN BÈ
+       (VIDEO TỰ ĐỘNG PHÁT KHI LẬT TỚI & DỪNG KHI LẬT ĐI)
+       ============================================================ */
+    function exportStandaloneBook() {
+      if (currentLoadedPages.length === 0) {
+        alert('Chưa có nội dung sách để xuất! Vui lòng chọn 1 file PDF của bạn trước khi xuất.');
+        return;
+      }
+
+      showToast('Đang đóng gói file sách cho bạn bè...');
+
+      const bgStyle = bgLayer.style.background || "radial-gradient(ellipse at center, #2e261f 0%, #15110d 100%)";
+      const embeddedImagesJson = JSON.stringify(currentLoadedPages);
+      const embeddedVideosJson = JSON.stringify(bookVideos);
+
+      const standaloneHtml = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${currentBookTitle} - FlipBook 3D</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --book-w: clamp(380px, 42vw, 580px);
+      --book-h: clamp(540px, 80vh, 820px);
+      --paper-texture: radial-gradient(circle at 50% 50%, #fffdf8 0%, #f4ede0 100%);
+      --accent: #d4a373;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-user-select: none; user-select: none; }
+    body { width: 100vw; height: 100vh; overflow: hidden; font-family: 'Plus Jakarta Sans', sans-serif; display: flex; align-items: center; justify-content: center; position: relative; background: #15110d; }
+    #bg { position: absolute; inset: 0; background: ${bgStyle}; z-index: 1; filter: brightness(0.85); }
+    .vignette { position: absolute; inset: 0; z-index: 2; pointer-events: none; background: radial-gradient(circle at center, transparent 35%, rgba(0,0,0,0.45) 100%); }
+    .viewport { position: relative; z-index: 10; perspective: 2800px; display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+    .book { position: relative; width: calc(var(--book-w) * 2); height: var(--book-h); transform-style: preserve-3d; transition: transform 0.75s cubic-bezier(0.25, 1, 0.45, 1); filter: drop-shadow(0 28px 45px rgba(0,0,0,0.5)) drop-shadow(0 12px 18px rgba(0,0,0,0.35)); }
+    .spine { position: absolute; top: 0; bottom: 0; left: 50%; width: 4px; transform: translateX(-50%); background: linear-gradient(to right, rgba(0,0,0,0.25), rgba(0,0,0,0.55), rgba(0,0,0,0.25)); z-index: 999; pointer-events: none; }
+    .sheet { position: absolute; top: 0; right: 0; width: var(--book-w); height: var(--book-h); transform-origin: left center; transform-style: preserve-3d; transition: transform 0.85s cubic-bezier(0.22, 0.61, 0.36, 1); cursor: pointer; }
+    .sheet.flipped { transform: rotateY(-180deg); }
+    .face { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--paper-texture); border-radius: 0 6px 6px 0; backface-visibility: hidden; overflow: hidden; display: flex; }
+    .face.back { transform: rotateY(180deg); border-radius: 6px 0 0 6px; }
+    .face img { width: 100%; height: 100%; object-fit: fill; display: block; pointer-events: none; }
+    .face.front::after { content: ""; position: absolute; top:0; bottom:0; left:0; width:55px; background: linear-gradient(to right, rgba(0,0,0,0.22), transparent); pointer-events:none; }
+    .face.back::after { content: ""; position: absolute; top:0; bottom:0; right:0; width:55px; background: linear-gradient(to left, rgba(0,0,0,0.22), transparent); pointer-events:none; }
+    
+    /* Video cố định trên trang cho người đọc */
+    .fixed-page-video { position: absolute; z-index: 60; border-radius: 8px; overflow: hidden; background: #000; box-shadow: 0 6px 20px rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.12); }
+    .fixed-page-video video, .fixed-page-video iframe { width: 100%; height: 100%; border: none; display: block; }
+    
+    .flip-btn { position: fixed; top: 50%; transform: translateY(-50%); width: 54px; height: 54px; border-radius: 50%; background: rgba(25, 23, 20, 0.7); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.15); color: #f1ebd8; display: flex; align-items: center; justify-content: center; font-size: 24px; cursor: pointer; z-index: 100; transition: all 0.25s ease; }
+    .flip-btn:hover { background: #d4a373; color: #1a1714; }
+    .flip-btn.prev { left: 24px; } .flip-btn.next { right: 24px; }
+    .top-bar { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; align-items: center; gap: 10px; background: rgba(20, 18, 15, 0.88); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 30px; padding: 6px 18px; color: #d4a373; font-family: 'Cinzel', serif; font-size: 13px; }
+    .zoom-controls { display: flex; align-items: center; background: rgba(0,0,0,0.3); border-radius: 16px; padding: 2px 6px; }
+    .zoom-btn { background: transparent; border: none; color: #d4a373; font-size: 15px; font-weight: 700; cursor: pointer; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
+    .icon-btn { background: transparent; border: none; color: #e5ded0; cursor: pointer; font-size: 15px; padding: 4px; display: flex; align-items: center; }
+    .icon-btn:hover { color: #d4a373; }
+  </style>
+</head>
+<body>
+  <div id="bg"></div>
+  <div class="vignette"></div>
+  <button class="flip-btn prev" id="btnPrev">&#10094;</button>
+  <button class="flip-btn next" id="btnNext">&#10095;</button>
+  <div class="top-bar">
+    <span id="pageTxt">Trang Bìa Trước</span>
+    <div class="zoom-controls">
+      <button class="zoom-btn" id="zmOut">−</button>
+      <span id="zmVal" style="font-size:11px; color:#fff; min-width:36px; text-align:center;">100%</span>
+      <button class="zoom-btn" id="zmIn">+</button>
+    </div>
+    <button class="icon-btn" id="soundBtn" title="Bật/Tắt âm thanh">🔊</button>
+    <button class="icon-btn" id="fsBtn" title="Toàn màn hình">⛶</button>
+  </div>
+  <main class="viewport">
+    <div class="book" id="bookEl">
+      <div class="spine"></div>
+    </div>
+  </main>
+  <script>
+    const images = ${embeddedImagesJson};
+    const videos = ${embeddedVideosJson};
+    const bookEl = document.getElementById('bookEl');
+    const pageTxt = document.getElementById('pageTxt');
+    const btnNext = document.getElementById('btnNext');
+    const btnPrev = document.getElementById('btnPrev');
+    const zmIn = document.getElementById('zmIn');
+    const zmOut = document.getElementById('zmOut');
+    const zmVal = document.getElementById('zmVal');
+    const soundBtn = document.getElementById('soundBtn');
+    const fsBtn = document.getElementById('fsBtn');
+
+    let sheets = [];
+    let curIdx = 0;
+    let zoom = 1.0;
+    let soundOn = true;
+    const numSheets = Math.ceil(images.length / 2);
+
+    for (let i = 0; i < numSheets; i++) {
+      const f = i * 2, b = i * 2 + 1;
+      const sh = document.createElement('div');
+      sh.className = 'sheet';
+      const ff = document.createElement('div');
+      ff.className = 'face front';
+      if (images[f]) { const img = document.createElement('img'); img.src = images[f]; ff.appendChild(img); }
+      const bf = document.createElement('div');
+      bf.className = 'face back';
+      if (images[b]) { const img = document.createElement('img'); img.src = images[b]; bf.appendChild(img); } else { bf.style.background = '#f2ece1'; }
+      sh.appendChild(ff); sh.appendChild(bf);
+      bookEl.appendChild(sh);
+      sheets.push(sh);
+    }
+
+    const allFaces = document.querySelectorAll('.face');
+    Object.keys(videos).forEach(fIdx => {
+      const list = videos[fIdx] || [];
+      const targetFace = allFaces[parseInt(fIdx)];
+      if (targetFace) {
+        list.forEach(v => {
+          const vBox = document.createElement('div');
+          vBox.className = 'fixed-page-video';
+          vBox.style.left = v.left;
+          vBox.style.top = v.top;
+          vBox.style.width = v.width;
+          vBox.style.height = v.height;
+
+          if (v.type === 'youtube') {
+            vBox.innerHTML = '<iframe src="' + v.src + '" allow="autoplay; encrypted-media" allowfullscreen></iframe>';
+          } else {
+            vBox.innerHTML = '<video src="' + v.src + '" controls playsinline></video>';
+          }
+          targetFace.appendChild(vBox);
+        });
+      }
+    });
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    let aCtx = null;
+    function playFlip() {
+      if (!soundOn) return;
+      try {
+        if (!aCtx) aCtx = new AudioContextClass();
+        if (aCtx.state === 'suspended') aCtx.resume();
+        const b = aCtx.createBuffer(1, aCtx.sampleRate * 0.16, aCtx.sampleRate);
+        const d = b.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - (i / d.length), 2) * 0.45;
+        const s = aCtx.createBufferSource(); s.buffer = b;
+        const f = aCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1600;
+        const g = aCtx.createGain(); g.gain.setValueAtTime(0.5, aCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, aCtx.currentTime + 0.15);
+        s.connect(f); f.connect(g); g.connect(aCtx.destination);
+        s.start();
+      } catch(e) {}
+    }
+
+    function getVisibleFaceIndices() {
+      if (numSheets === 0) return [];
+      if (curIdx === 0) return [0];
+      if (curIdx === numSheets) return [(numSheets - 1) * 2 + 1];
+      return [(curIdx - 1) * 2 + 1, curIdx * 2];
+    }
+
+    function syncVideos() {
+      const visible = getVisibleFaceIndices();
+      allFaces.forEach((face, idx) => {
+        const isVis = visible.includes(idx);
+        face.querySelectorAll('video').forEach(v => {
+          if (isVis) {
+            const p = v.play();
+            if (p !== undefined) {
+              p.catch(() => {
+                v.muted = true;
+                v.play().catch(() => {});
+              });
+            }
+          } else {
+            v.pause();
+          }
+        });
+        face.querySelectorAll('iframe').forEach(ifr => {
+          try {
+            ifr.contentWindow.postMessage(JSON.stringify({
+              event: 'command',
+              func: isVis ? 'playVideo' : 'pauseVideo',
+              args: []
+            }), '*');
+          } catch(e) {}
+        });
+      });
+    }
+
+    function update() {
+      sheets.forEach((s, idx) => {
+        if (idx < curIdx) { s.classList.add('flipped'); s.style.zIndex = idx + 1; }
+        else { s.classList.remove('flipped'); s.style.zIndex = (numSheets - idx) + 1; }
+      });
+      let tx = curIdx === 0 ? -25 : (curIdx === numSheets ? 25 : 0);
+      bookEl.style.transform = "translateX(" + tx + "%) scale(" + zoom + ")";
+      if (curIdx === 0) pageTxt.textContent = "Trang Bìa Trước (1)";
+      else if (curIdx === numSheets) pageTxt.textContent = "Trang Cuối (" + images.length + ")";
+      else pageTxt.textContent = "Trang " + (curIdx * 2) + " - " + Math.min(curIdx * 2 + 1, images.length) + " / " + images.length;
+      syncVideos();
+    }
+
+    function next() { if (curIdx < numSheets) { sheets[curIdx].classList.add('flipped'); playFlip(); curIdx++; update(); } }
+    function prev() { if (curIdx > 0) { curIdx--; sheets[curIdx].classList.remove('flipped'); playFlip(); update(); } }
+
+    sheets.forEach((s, idx) => {
+      s.addEventListener('click', (e) => {
+        if (e.target.closest('.fixed-page-video')) return;
+        if (s.classList.contains('flipped')) { if (idx === curIdx - 1) prev(); }
+        else { if (idx === curIdx) next(); }
+      });
+    });
+
+    btnNext.addEventListener('click', next);
+    btnPrev.addEventListener('click', prev);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ') next();
+      else if (e.key === 'ArrowLeft') prev();
+    });
+
+    zmIn.addEventListener('click', () => { zoom = Math.min(1.6, zoom + 0.1); zmVal.textContent = Math.round(zoom * 100) + "%"; update(); });
+    zmOut.addEventListener('click', () => { zoom = Math.max(0.7, zoom - 0.1); zmVal.textContent = Math.round(zoom * 100) + "%"; update(); });
+
+    soundBtn.addEventListener('click', () => { soundOn = !soundOn; soundBtn.textContent = soundOn ? '🔊' : '🔇'; });
+    fsBtn.addEventListener('click', () => {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+      else if (document.exitFullscreen) document.exitFullscreen();
+    });
+
+    update();
+  <\/script>
+</body>
+</html>`;
+
+      const blob = new Blob([standaloneHtml], { type: 'text/html;charset=utf-8' });
+      const dlLink = document.createElement('a');
+      dlLink.href = URL.createObjectURL(blob);
+      dlLink.download = `${currentBookTitle}-DocSach.html`;
+      document.body.appendChild(dlLink);
+      dlLink.click();
+      document.body.removeChild(dlLink);
+      URL.revokeObjectURL(dlLink.href);
+
+      showToast(`Đã tải về file "${currentBookTitle}-DocSach.html"!`);
+    }
+
+    topExportBtn.addEventListener('click', exportStandaloneBook);
+    modalExportBtn.addEventListener('click', exportStandaloneBook);
+
+    /* ============================================================
+       TÍNH NĂNG CHIA SẺ
+       ============================================================ */
+    function showToast(message) {
+      toastNotice.innerHTML = `<span>✓</span> ${message}`;
+      toastNotice.classList.add('show');
+      setTimeout(() => {
+        toastNotice.classList.remove('show');
+      }, 3000);
+    }
+
+    function updateShareLinks() {
+      const base = window.location.origin + window.location.pathname;
+      const shareUrl = `${base}?view=1`;
+      shareLinkInput.value = shareUrl;
+
+      const encodedUrl = encodeURIComponent(shareUrl);
+      const shareTitle = encodeURIComponent('Mời bạn cùng xem quyển sách FlipBook 3D này!');
+
+      shareFacebook.href = `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`;
+      shareTwitter.href = `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${shareTitle}`;
+      shareTelegram.href = `https://t.me/share/url?url=${encodedUrl}&text=${shareTitle}`;
+      shareQrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodedUrl}`;
+    }
+
+    openShareModalBtn.addEventListener('click', () => {
+      updateShareLinks();
+      shareModal.classList.add('active');
+    });
+
+    closeShareModalBtn.addEventListener('click', () => {
+      shareModal.classList.remove('active');
+    });
+
+    shareModal.addEventListener('click', (e) => {
+      if (e.target === shareModal) {
+        shareModal.classList.remove('active');
+      }
+    });
+
+    copyLinkBtn.addEventListener('click', () => {
+      shareLinkInput.select();
+      shareLinkInput.setSelectionRange(0, 99999);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(shareLinkInput.value).then(() => {
+          showToast('Đã sao chép link người đọc (Không có nút chỉnh sửa)!');
+        });
+      } else {
+        document.execCommand('copy');
+        showToast('Đã sao chép liên kết!');
+      }
+    });
+
+    nativeShareBtn.addEventListener('click', async () => {
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: 'FlipBook 3D Tương Tác',
+            text: 'Mời bạn cùng xem quyển sách lật 3D tuyệt đẹp này!',
+            url: shareLinkInput.value
+          });
+        } catch (err) {}
+      } else {
+        copyLinkBtn.click();
+      }
+    });
+
+    /* ============================================================
+       RÁP SÁCH TỪ DANH SÁCH ẢNH TRANG (HTML HOẶC PDF)
+       ============================================================ */
+    function buildBookFromPageImages(imageUrls) {
+      bookContainer.innerHTML = '<div class="book-spine-crease"></div>';
+      sheets = [];
+      currentSheetIndex = 0;
+      totalPdfPages = imageUrls.length;
+      currentLoadedPages = imageUrls;
+
+      const numSheets = Math.ceil(imageUrls.length / 2);
+      totalSheets = numSheets;
+
+      for (let i = 0; i < numSheets; i++) {
+        const frontPageNum = i * 2;
+        const backPageNum = i * 2 + 1;
+
+        const sheetEl = document.createElement('div');
+        sheetEl.className = 'paper-sheet';
+
+        const frontFace = document.createElement('div');
+        frontFace.className = 'page-face front';
+        if (imageUrls[frontPageNum]) {
+          const img = document.createElement('img');
+          img.className = 'pdf-page-img';
+          img.src = imageUrls[frontPageNum];
+          frontFace.appendChild(img);
+        }
+
+        const backFace = document.createElement('div');
+        backFace.className = 'page-face back';
+        if (imageUrls[backPageNum]) {
+          const img = document.createElement('img');
+          img.className = 'pdf-page-img';
+          img.src = imageUrls[backPageNum];
+          backFace.appendChild(img);
+        } else {
+          backFace.style.background = '#f2ece1';
+        }
+
+        sheetEl.appendChild(frontFace);
+        sheetEl.appendChild(backFace);
+        bookContainer.appendChild(sheetEl);
+        sheets.push(sheetEl);
+      }
+
+      attachSheetEvents();
+      resetSheetZIndexes();
+      renderSavedVideos();
+    }
+
+    /* ============================================================
+       GIẢI MÃ & RENDER FILE PDF THÀNH CÁC TRANG ẢNH (PDF.JS)
+       ============================================================ */
+    async function renderPdfDocument(pdf) {
+      const numPages = pdf.numPages;
+      const renderedPageImages = [];
+
+      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        pdfLoadingStatus.textContent = `Đang chuyển đổi trang ${pageNum} / ${numPages}...`;
+        const page = await pdf.getPage(pageNum);
+
+        const viewport = page.getViewport({ scale: 1.8 });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport
+        };
+        await page.render(renderContext).promise;
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        renderedPageImages.push(dataUrl);
+      }
+
+      currentBookMode = 'pdf';
+      buildBookFromPageImages(renderedPageImages);
+      pdfLoading.classList.remove('active');
+      showToast('Đã nạp file PDF thành công!');
+    }
+
+    async function loadPdfFile(file) {
+      if (!window.pdfjsLib) {
+        alert('Trình duyệt chưa tải xong thư viện PDF.js. Vui lòng kiểm tra kết nối mạng!');
+        return;
+      }
+
+      currentBookTitle = file.name.replace(/\.[^/.]+$/, "");
+      pdfLoading.classList.add('active');
+      pdfLoadingStatus.textContent = 'Đang đọc file PDF...';
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        await renderPdfDocument(pdf);
+      } catch (err) {
+        console.error(err);
+        pdfLoading.classList.remove('active');
+        alert('Lỗi khi đọc file PDF: ' + err.message);
+      }
+    }
+
+    pdfFileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file && file.type === 'application/pdf') {
+        loadPdfFile(file);
+      } else if (file) {
+        alert('Vui lòng chọn đúng file có đuôi định dạng .pdf!');
+      }
+    });
+
+    window.addEventListener('dragover', (e) => {
+      if (document.body.classList.contains('reader-mode')) return;
+      e.preventDefault();
+      dragDropZone.classList.add('active');
+    });
+
+    dragDropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragDropZone.classList.remove('active');
+    });
+
+    dragDropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDropZone.classList.remove('active');
+      const files = e.dataTransfer.files;
+      if (files.length > 0 && files[0].name.toLowerCase().endsWith('.pdf')) {
+        loadPdfFile(files[0]);
+      } else {
+        alert('Vui lòng thả file PDF vào đây!');
+      }
+    });
+
+    /* ============================================================
+       TẠO SÁCH MẪU BAN ĐẦU (KHI CHƯA NẠP PDF)
+       ============================================================ */
+    function loadSampleBook() {
+      bookContainer.innerHTML = `
+        <div class="book-spine-crease"></div>
+        <!-- TỜ 1: Bìa trước & Trang 1 -->
+        <div class="paper-sheet" style="z-index: 10;">
+          <div class="page-face front" style="background: linear-gradient(135deg, #1f2c38 0%, #111822 100%); color: #f7ede2; padding: 44px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+            <div style="border: 2px solid rgba(212,163,115,0.45); border-radius: 4px; padding: 34px 26px; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+              <div style="display:inline-block; padding: 6px 18px; background: rgba(212,163,115,0.15); border: 1px solid rgba(212,163,115,0.35); border-radius: 20px; font-size: 12px; letter-spacing: 1.5px; color: #ecd5bc; text-transform: uppercase; margin-bottom: 14px;">FLIPBOOK TƯƠNG TÁC</div>
+              <h1 style="font-family:'Cinzel', serif; font-size: 32px; letter-spacing: 2px; color: #e0b589; margin-bottom: 14px;">NHỮNG MÙA NẮNG</h1>
+              <p style="font-family:'Playfair Display', serif; font-style: italic; font-size: 16px; color: #c4b5a2; margin-bottom: 26px;">Sách Lật 3D & Chèn Video</p>
+              <p style="font-size: 13.5px; color: #b8aba0; max-width: 280px; line-height: 1.6;">Bấm nút "🎬 Thêm Video" ở trên để chèn video (YouTube hoặc MP4) vào trang sách!</p>
+              <div style="margin-top: 32px; font-size: 13px; opacity: 0.85; color:#d4a373;">👉 Nhấp bên phải để mở sách</div>
+            </div>
+          </div>
+          <div class="page-face back">
+            <div style="padding: 44px 38px; height: 100%; display: flex; flex-direction: column; color: #2b2b2b;">
+              <div style="border-bottom: 1px solid rgba(0,0,0,0.08); padding-bottom: 8px; margin-bottom: 20px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #8c7e6c; display:flex; justify-content:space-between;">
+                <span>Tính Năng Video</span><span>01</span>
+              </div>
+              <h2 style="font-family:'Playfair Display', serif; font-size: 24px; color: #24201c; margin-bottom: 16px;">Tự Động Phát & Tạm Dừng</h2>
+              <div style="font-size: 15px; line-height: 1.75; color: #423e38; text-align: justify; flex: 1;">
+                <p style="margin-bottom: 14px;"><strong>Tự động phát:</strong> Khi lật sách tới bất kỳ trang nào có video, video tại trang đó sẽ tự động bắt đầu phát.</p>
+                <p style="margin-bottom: 14px;"><strong>Tùy ý tạm dừng:</strong> Người xem có thể bấm dừng/phát bất kỳ lúc nào trên khung video.</p>
+                <p>Khi người xem lật sang trang khác, video sẽ tự động tạm dừng lại để không bị đè âm thanh.</p>
+              </div>
+              <div style="margin-top:auto; font-family:'Cinzel', serif; font-size:12px; text-align:center; color:#9c8e7c; border-top:1px solid rgba(0,0,0,0.06); padding-top:10px;">Trang 1</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TỜ 2: Trang 2 & Trang 3 -->
+        <div class="paper-sheet" style="z-index: 9;">
+          <div class="page-face front">
+            <div style="padding: 44px 38px; height: 100%; display: flex; flex-direction: column; color: #2b2b2b;">
+              <div style="border-bottom: 1px solid rgba(0,0,0,0.08); padding-bottom: 8px; margin-bottom: 20px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #8c7e6c; display:flex; justify-content:space-between;">
+                <span>Kỷ Niệm</span><span>02</span>
+              </div>
+              <h2 style="font-family:'Playfair Display', serif; font-size: 24px; color: #24201c; margin-bottom: 16px;">Góc Phố Hoàng Hôn</h2>
+              <div style="width:100%; height:220px; border-radius:4px; overflow:hidden; margin-bottom:16px;">
+                <img src="https://images.unsplash.com/photo-1514565131-fce0801e5785?auto=format&fit=crop&w=800&q=80" style="width:100%; height:100%; object-fit:cover; display:block;">
+              </div>
+              <p style="font-size: 14.5px; line-height: 1.7; color: #423e38;">Những vệt nắng chiều vàng rơi nghiêng qua khung cửa gỗ, lưu giữ lại một buổi chiều êm đềm.</p>
+              <div style="margin-top:auto; font-family:'Cinzel', serif; font-size:12px; text-align:center; color:#9c8e7c; border-top:1px solid rgba(0,0,0,0.06); padding-top:10px;">Trang 2</div>
+            </div>
+          </div>
+          <div class="page-face back">
+            <div style="padding: 44px 38px; height: 100%; display: flex; flex-direction: column; color: #2b2b2b;">
+              <div style="border-bottom: 1px solid rgba(0,0,0,0.08); padding-bottom: 8px; margin-bottom: 20px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: #8c7e6c; display:flex; justify-content:space-between;">
+                <span>Kỷ Niệm</span><span>03</span>
+              </div>
+              <h2 style="font-family:'Playfair Display', serif; font-size: 24px; color: #24201c; margin-bottom: 16px;">Trang Sách Bình Yên</h2>
+              <p style="font-size: 14.5px; line-height: 1.75; color: #423e38; margin-bottom:14px;">Mỗi lần lật sách mang lại một trải nghiệm thị giác và thính giác trọn vẹn.</p>
+              <p style="font-size: 14.5px; line-height: 1.75; color: #423e38;">Chất lượng hình ảnh luôn được đảm bảo nét căng và tỷ lệ căn giữa màn hình tuyệt đối.</p>
+              <div style="margin-top:auto; font-family:'Cinzel', serif; font-size:12px; text-align:center; color:#9c8e7c; border-top:1px solid rgba(0,0,0,0.06); padding-top:10px;">Trang 3</div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      sheets = Array.from(document.querySelectorAll('.paper-sheet'));
+      totalSheets = sheets.length;
+      totalPdfPages = 0;
+      currentSheetIndex = 0;
+      attachSheetEvents();
+      resetSheetZIndexes();
+      renderSavedVideos();
+    }
+
+    /* ============================================================
+       SỰ KIỆN NÚT BẤM & PHÍM TẮT
+       ============================================================ */
+    btnNext.addEventListener('click', flipNext);
+    btnPrev.addEventListener('click', flipPrev);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') flipNext();
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') flipPrev();
+    });
+
+    let touchStartX = 0;
+    let touchEndX = 0;
+    document.addEventListener('touchstart', (e) => {
+      touchStartX = e.changedTouches[0].screenX;
+    }, false);
+
+    document.addEventListener('touchend', (e) => {
+      touchEndX = e.changedTouches[0].screenX;
+      const diff = touchEndX - touchStartX;
+      if (Math.abs(diff) > 50) {
+        if (diff < 0) flipNext();
+        else flipPrev();
+      }
+    }, false);
+
+    /* ============================================================
+       QUẢN LÝ HÌNH NỀN PHÍA SAU
+       ============================================================ */
+    const bgPresets = {
+      wood: "url('https://images.unsplash.com/photo-1546484396-fb3fc6f95f98?auto=format&fit=crop&w=1920&q=80')",
+      dark: "radial-gradient(circle at center, #23272f 0%, #0d1117 100%)",
+      library: "url('https://images.unsplash.com/photo-1507842229456-7880903c734b?auto=format&fit=crop&w=1920&q=80')",
+      cozy: "url('https://images.unsplash.com/photo-1513694203232-719a280e022f?auto=format&fit=crop&w=1920&q=80')",
+      minimal: "radial-gradient(circle at center, #3a3d40 0%, #181719 100%)"
+    };
+
+    function setBackground(val, isCustomImage = false) {
+      if (isCustomImage) {
+        bgLayer.style.background = `url('${val}') center/cover no-repeat`;
+      } else {
+        const bgVal = bgPresets[val] || bgPresets.wood;
+        if (bgVal.startsWith('url')) {
+          bgLayer.style.background = `${bgVal} center/cover no-repeat`;
+        } else {
+          bgLayer.style.background = bgVal;
+        }
+      }
+      localStorage.setItem('flipbook_bg', isCustomImage ? val : 'preset:' + val);
+    }
+
+    const savedBg = localStorage.getItem('flipbook_bg');
+    if (savedBg) {
+      if (savedBg.startsWith('preset:')) {
+        const p = savedBg.replace('preset:', '');
+        setBackground(p);
+        document.querySelectorAll('.bg-thumb').forEach(t => {
+          t.classList.toggle('selected', t.dataset.type === p);
+        });
+      } else {
+        setBackground(savedBg, true);
+      }
+    } else {
+      setBackground('wood');
+    }
+
+    toggleBgDrawerBtn.addEventListener('click', () => {
+      bgDrawer.classList.toggle('open');
+      toggleBgDrawerBtn.classList.toggle('active');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!bgDrawer.contains(e.target) && !toggleBgDrawerBtn.contains(e.target)) {
+        bgDrawer.classList.remove('open');
+        toggleBgDrawerBtn.classList.remove('active');
+      }
+    });
+
+    document.querySelectorAll('.bg-thumb').forEach(thumb => {
+      thumb.addEventListener('click', () => {
+        document.querySelectorAll('.bg-thumb').forEach(t => t.classList.remove('selected'));
+        thumb.classList.add('selected');
+        setBackground(thumb.dataset.type);
+      });
+    });
+
+    bgFileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setBackground(event.target.result, true);
+          document.querySelectorAll('.bg-thumb').forEach(t => t.classList.remove('selected'));
+          bgDrawer.classList.remove('open');
+          toggleBgDrawerBtn.classList.remove('active');
+        };
+        reader.readAsDataURL(file);
+      }
+    });
+
+    toggleSoundBtn.addEventListener('click', () => {
+      isSoundEnabled = !isSoundEnabled;
+      soundIcon.textContent = isSoundEnabled ? '🔊' : '🔇';
+    });
+
+    toggleFullscreenBtn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+      }
+    });
+
+    loadSampleBook();
+  </script>
+</body>
+</html>
